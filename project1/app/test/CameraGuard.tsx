@@ -1,9 +1,9 @@
 "use client";
 
 import { useProctoring } from "./useProctoring";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-export default function CameraGuard({ attemptId, onStatusChange }: { attemptId: string; onStatusChange?: (status: string, count: number, type?: string) => void }) {
+export default function CameraGuard({ attemptId, onStatusChange, onCounterUpdate }: { attemptId: string; onStatusChange?: (status: string, count: number, type?: string) => void; onCounterUpdate?: (count: number) => void }) {
   const [isLocked, setIsLocked] = useState(false);
   
   const { videoRef, violations, recordViolation } = useProctoring(attemptId, async () => {
@@ -32,13 +32,22 @@ export default function CameraGuard({ attemptId, onStatusChange }: { attemptId: 
     }
   });
 
+  useEffect(() => {
+    if (typeof violations === "number") {
+      onCounterUpdate?.(violations);
+    }
+  }, [violations, onCounterUpdate]);
+
   return (
     <>
-      <video ref={videoRef} muted autoPlay playsInline className="hidden" />
-      <div className="text-xs text-red-500">
-        Camera Violations: {violations}/2
-        {isLocked && <span className="ml-2 font-bold">LOCKED</span>}
-      </div>
+      <video
+        ref={videoRef}
+        muted
+        autoPlay
+        playsInline
+        className="fixed bottom-4 left-4 z-20 h-28 w-36 rounded-xl border border-zinc-300 bg-black shadow-md object-cover"
+      />
+      {/* Counter moved to top bar via parent */}
     </>
   );
 }

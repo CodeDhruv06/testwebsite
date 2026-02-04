@@ -1,1 +1,99 @@
 @import "tailwindcss";
+
+/* Premium animated gradient for sidebars and cards */
+.bg-animated-gradient {
+	background: linear-gradient(180deg, #ffd1dc 0%, #c7d2fe 100%);
+	background-size: 200% 200%;
+	animation: gradientShift 12s ease-in-out infinite;
+}
+
+@keyframes gradientShift {
+	0% { background-position: 0% 0%; }
+	50% { background-position: 100% 100%; }
+	100% { background-position: 0% 0%; }
+}
+
+/* Subtle glow ring animation for active items */
+.ring-glow {
+	box-shadow: 0 0 0 0 rgba(24, 24, 27, 0.12);
+	animation: ringGlowPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes ringGlowPulse {
+	0% { box-shadow: 0 0 0 0 rgba(24, 24, 27, 0.12); }
+	50% { box-shadow: 0 0 0 8px rgba(24, 24, 27, 0.08); }
+	100% { box-shadow: 0 0 0 0 rgba(24, 24, 27, 0.12); }
+}
+
+/* Circling spinner to decorate buttons */
+.orbit {
+	width: 14px;
+	height: 14px;
+	border-radius: 9999px;
+	border: 2px solid rgba(24,24,27,0.18);
+	border-top-color: rgba(24,24,27,0.55);
+	border-right-color: rgba(24,24,27,0.35);
+	display: inline-block;
+	animation: orbitSpin 0.9s linear infinite;
+	flex-shrink: 0;
+}
+
+@keyframes orbitSpin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+
+/* Split hero layout: 70vw dark left, 30vw light right */
+.split-layout {
+	display: flex;
+	min-height: 100vh;
+	width: 100%;
+}
+
+.split-left {
+	width: 70vw;
+	background:
+		radial-gradient(1000px 500px at 20% 15%, rgba(173, 199, 255, 0.25), transparent 60%),
+		radial-gradient(800px 450px at 82% 40%, rgba(255, 189, 206, 0.25), transparent 65%),
+		linear-gradient(180deg, #f6fbff 0%, #fff3f7 100%);
+	position: relative;
+	color: #1f2937;
+}
+
+.split-right {
+	width: 30vw;
+	background: #ffffff;
+	color: #0b0b0b;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 3rem 2rem;
+}
+
+/* Levitating balls */
+.ball {
+	position: absolute;
+	border-radius: 9999px;
+	background: radial-gradient(circle at 40% 40%, rgba(173, 199, 255, 0.35), rgba(255, 189, 206, 0.28) 60%, rgba(173, 199, 255, 0.22) 100%);
+	box-shadow: 0 0 60px rgba(173, 199, 255, 0.18), 0 0 60px rgba(255, 189, 206, 0.14) inset;
+	filter: saturate(115%);
+	animation: floatY 6s ease-in-out infinite;
+	will-change: transform;
+	opacity: 0.92;
+}
+
+.ball.sm { width: 120px; height: 120px; }
+.ball.md { width: 180px; height: 180px; }
+.ball.lg { width: 260px; height: 260px; }
+
+@keyframes floatY {
+	0% { transform: translateY(0px) translateX(0px); }
+	50% { transform: translateY(-14px) translateX(8px); }
+	100% { transform: translateY(0px) translateX(0px); }
+}
+
+/* Responsive: stack on small screens */
+@media (max-width: 900px) {
+	.split-left, .split-right { width: 100vw; }
+	.split-layout { flex-direction: column; }
+}

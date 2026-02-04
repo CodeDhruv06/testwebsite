@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState, forwardRef, useImperativeHandle } from "react";
+import React, { useEffect, useMemo, useRef, useState, forwardRef, useImperativeHandle, useCallback } from "react";
 import axios from "axios";
 import Modal from "./Modal";
 import QuestionNav from "./QuestionNAv";
 import QuestionPanel from "./QuestionPanel";
 import Banner from "./Banner";
+import { useWindowMonitor } from "@/app/test/useWindowMonitor";
 
 function formatTime(sec: number): string {
   const s = Math.max(0, sec);
@@ -31,6 +32,27 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
   const [status, setStatus] = useState("idle"); // idle|active|locked|submitted
   const [violationsCount, setViolationsCount] = useState(0);
   const [lockReason, setLockReason] = useState("");
+  const [camViolationsCount, setCamViolationsCount] = useState(0);
+  const CAMERA_MAX = 2;
+
+  // Window monitoring state
+  const [windowMonitoringEnabled, setWindowMonitoringEnabled] = useState(false);
+
+  // Pre-checks (camera/mic/speaker) before starting the test
+  const preVideoRef = useRef<HTMLVideoElement>(null);
+  const preCamStreamRef = useRef<MediaStream | null>(null);
+  const [camReady, setCamReady] = useState(false);
+  const [micReady, setMicReady] = useState(false);
+  const [speakerReady, setSpeakerReady] = useState(false);
+  const [camLoading, setCamLoading] = useState(false);
+  const [micLoading, setMicLoading] = useState(false);
+  const [speakerLoading, setSpeakerLoading] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [micLevel, setMicLevel] = useState(0);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const meterTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // modals
   const [warnOpen, setWarnOpen] = useState(false);
@@ -58,10 +80,14 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
           "FULLSCREEN_EXIT": "⚠️ You exited fullscreen mode",
           "TAB_HIDDEN": "⚠️ You switched tabs during the test",
           "BLUR": "⚠️ You switched away from the test window",
-          "LOOKING_AWAY": "📷 You were looking away from the screen"
+          "LOOKING_AWAY": "📷 You were looking away from the screen",
+          "WINDOW_SWITCH": "🖥️ You switched to another application"
         };
         setLockReason(reasons[violationType] || `Test locked due to ${violationType}`);
       }
+    },
+    updateCameraViolations: (count: number) => {
+      setCamViolationsCount(count);
     }
   }));
 
@@ -71,6 +97,7 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
   // ---- Start exam: fullscreen + create session
   async function startTest() {
     try {
+      setStarting(true);
       // Try to request fullscreen (optional - may fail in some browsers)
       try {
         if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
@@ -96,6 +123,7 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
       setSecondsLeft(res.data.test.durationSeconds || 0);
       setStatus("active");
       setLoading(false);
+      setStarting(false);
     } catch (e: any) {
       const msg =
         e?.response?.data?.error ||
@@ -104,8 +132,109 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
         "Failed to start test session";
       setFatalError(msg);
       setLoading(false);
+      setStarting(false);
     }
   }
+
+  // ---- pre-checks helpers
+  async function enableCameraPre() {
+    try {
+      setCamLoading(true);
+      // Stop any previous camera tracks to avoid conflicts
+      preCamStreamRef.current?.getTracks().forEach((t) => t.stop());
+
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      preCamStreamRef.current = stream;
+      // Mark ready so the preview element renders, then attach in effect
+      setCamReady(true);
+      setCamLoading(false);
+    } catch (err) {
+      setCamReady(false);
+      setCamLoading(false);
+      setWarnText("Camera permission is required to proceed.");
+      setWarnOpen(true);
+    }
+  }
+
+  // Attach stream to preview once the element exists after camReady state updates
+  useEffect(() => {
+    async function attachPreview() {
+      if (!camReady) return;
+      const v = preVideoRef.current;
+      const stream = preCamStreamRef.current;
+      if (!v || !stream) return;
+      (v as any).srcObject = stream as any;
+      await new Promise<void>((resolve) => {
+        const onLoaded = () => {
+          v.removeEventListener("loadedmetadata", onLoaded);
+          resolve();
+        };
+        if (v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0) resolve();
+        else v.addEventListener("loadedmetadata", onLoaded, { once: true });
+      });
+      try { await v.play(); } catch {}
+    }
+    attachPreview();
+  }, [camReady]);
+
+  async function enableMicPre() {
+    try {
+      setMicLoading(true);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      micStreamRef.current = stream;
+      const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext;
+      audioCtxRef.current = new AudioCtx();
+      const ctx = audioCtxRef.current!;
+      const source = ctx.createMediaStreamSource(stream);
+      analyserRef.current = ctx.createAnalyser();
+      analyserRef.current.fftSize = 256;
+      source.connect(analyserRef.current);
+
+      if (meterTimerRef.current) clearInterval(meterTimerRef.current);
+      meterTimerRef.current = setInterval(() => {
+        const analyser = analyserRef.current!;
+        const buffer = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteTimeDomainData(buffer);
+        let sum = 0;
+        for (let i = 0; i < buffer.length; i++) {
+          const v = (buffer[i] - 128) / 128; // -1..1
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / buffer.length); // 0..1
+        setMicLevel(Math.min(1, rms));
+      }, 200);
+      setMicReady(true);
+      setMicLoading(false);
+    } catch (err) {
+      setMicReady(false);
+      setMicLoading(false);
+      setWarnText("Microphone permission failed. Please check your browser settings.");
+      setWarnOpen(true);
+    }
+  }
+
+  function playSpeakerTone() {
+    const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext;
+    const ctx: AudioContext = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 660; // test tone
+    gain.gain.value = 0.05; // gentle volume
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    setSpeakerLoading(true);
+    setTimeout(() => { osc.stop(); ctx.close(); setSpeakerLoading(false); }, 800);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (meterTimerRef.current) clearInterval(meterTimerRef.current);
+      micStreamRef.current?.getTracks().forEach((t) => t.stop());
+      audioCtxRef.current?.close?.();
+    };
+  }, []);
 
   // ---- autosave
   async function saveAnswers() {
@@ -162,7 +291,8 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
           "FULLSCREEN_EXIT": "⚠️ You exited fullscreen mode",
           "TAB_HIDDEN": "⚠️ You switched tabs during the test",
           "BLUR": "⚠️ You switched away from the test window",
-          "LOOKING_AWAY": "📷 You were looking away from the screen"
+          "LOOKING_AWAY": "📷 You were looking away from the screen",
+          "WINDOW_SWITCH": "🖥️ You switched to another application"
         };
         setLockReason(reasons[type] || `Test locked due to ${type}`);
         setStatus("locked");
@@ -172,6 +302,39 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
       // ignore
     }
   }
+
+  // ---- Window monitoring hook
+  const handleWindowViolation = useCallback((windowTitle: string) => {
+    console.log(`🖥️ Window violation detected: switched to "${windowTitle}"`);
+    reportViolation("WINDOW_SWITCH");
+  }, [attemptId]);
+
+  const { 
+    initializeMonitoring, 
+    stopMonitoring, 
+    isMonitoring: windowMonitorActive,
+    windowsAvailable,
+    allowedWindow 
+  } = useWindowMonitor({
+    enabled: windowMonitoringEnabled && status === "active",
+    checkInterval: 1000, // Check every second
+    onViolation: handleWindowViolation,
+  });
+
+  // Initialize window monitoring when test becomes active
+  useEffect(() => {
+    if (status === "active" && !windowMonitorActive) {
+      initializeMonitoring().then((success) => {
+        if (success) {
+          setWindowMonitoringEnabled(true);
+          console.log("✅ Window monitoring started");
+        }
+      });
+    } else if (status !== "active" && windowMonitorActive) {
+      stopMonitoring();
+      setWindowMonitoringEnabled(false);
+    }
+  }, [status, windowMonitorActive, initializeMonitoring, stopMonitoring]);
 
   // ---- start timers when active
   useEffect(() => {
@@ -281,14 +444,123 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
 
   if (loading && status === "idle") {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-zinc-50 to-zinc-200 p-6">
-        <div className="mx-auto max-w-xl space-y-4">
-          <Banner variant="info" title="Ready to start?" message="This test may request fullscreen. Please avoid switching tabs." />
-          <button className="inline-flex items-center rounded-xl bg-zinc-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-black" onClick={startTest}>
-            Start Test
-          </button>
+      <>
+      <img src="banner.png" alt="banner" className="w-full h-24"/>
+      <div className="split-layout">
+        {/* Left 70vw: dark with levitating balls */}
+        <div className="split-left p-6">
+          {/* Balls background */}
+          <span className="ball lg" style={{ top: 120, left: 240 }} />
+          <span className="ball md" style={{ top: 320, left: 520, animationDelay: "0.6s" }} />
+          <span className="ball sm" style={{ top: 60, left: 820, animationDelay: "0.3s" }} />
+          <span className="ball sm" style={{ top: 420, left: 180, animationDelay: "1.0s" }} />
+
+          <div className="relative z-10 mx-auto max-w-2xl space-y-6">
+          <Banner
+            variant="info"
+            title="Pre-checks before starting"
+            message="Enable camera, check microphone, and test speakers for a smooth proctored experience."
+          />
+
+          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="text-sm font-semibold">Camera</div>
+                <div className="mt-1 text-sm text-zinc-600">We need camera access to monitor during the test.</div>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${camReady ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-zinc-50 text-zinc-700 border border-zinc-200"}`}>{camReady ? "Ready" : "Not enabled"}</span>
+                <button className="inline-flex items-center rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-900 shadow-sm transition hover:bg-zinc-50 disabled:opacity-60" onClick={enableCameraPre} disabled={camLoading || camReady}>
+                  {camLoading ? (
+                    <span className="mr-2 inline-block h-3.5 w-3.5 rounded-full border-2 border-zinc-300 border-t-zinc-700 animate-spin" aria-hidden="true"></span>
+                  ) : camReady ? (
+                    <span className="mr-2 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-[10px] text-white" aria-hidden="true">✓</span>
+                  ) : null}
+                  {camReady ? "Camera Enabled" : "Enable Camera"}
+                </button>
+              </div>
+            </div>
+            {camReady ? (
+              <div className="mt-3 text-xs text-zinc-600">Preview appears at bottom-left.</div>
+            ) : null}
+          </div>
+
+          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="text-sm font-semibold">Microphone</div>
+                <div className="mt-1 text-sm text-zinc-600">Grant mic access and speak to see the meter move.</div>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${micReady ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-zinc-50 text-zinc-700 border border-zinc-200"}`}>{micReady ? "Ready" : "Not enabled"}</span>
+                <button className="inline-flex items-center rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-900 shadow-sm transition hover:bg-zinc-50 disabled:opacity-60" onClick={enableMicPre} disabled={micLoading || micReady}>
+                  {micLoading ? (
+                    <span className="mr-2 inline-block h-3.5 w-3.5 rounded-full border-2 border-zinc-300 border-t-zinc-700 animate-spin" aria-hidden="true"></span>
+                  ) : micReady ? (
+                    <span className="mr-2 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-[10px] text-white" aria-hidden="true">✓</span>
+                  ) : null}
+                  {micReady ? "Mic Enabled" : "Enable Mic"}
+                </button>
+              </div>
+            </div>
+            <div className="mt-3">
+              <div className="h-2 w-full rounded-full bg-zinc-100">
+                <div className="h-2 rounded-full bg-emerald-500 transition-all" style={{ width: `${Math.min(100, Math.round(micLevel * 100))}%` }}></div>
+              </div>
+              <div className="mt-1 text-xs text-zinc-600">Mic level</div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="text-sm font-semibold">Speaker</div>
+                <div className="mt-1 text-sm text-zinc-600">Play a short tone to confirm you can hear audio.</div>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${speakerReady ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-zinc-50 text-zinc-700 border border-zinc-200"}`}>{speakerReady ? "Confirmed" : "Not checked"}</span>
+                <button className="inline-flex items-center rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-900 shadow-sm transition hover:bg-zinc-50 disabled:opacity-60" onClick={playSpeakerTone} disabled={speakerLoading}>
+                  {speakerLoading ? (
+                    <span className="mr-2 inline-block h-3.5 w-3.5 rounded-full border-2 border-zinc-300 border-t-zinc-700 animate-spin" aria-hidden="true"></span>
+                  ) : speakerReady ? (
+                    <span className="mr-2 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-[10px] text-white" aria-hidden="true">✓</span>
+                  ) : null}
+                  {speakerReady ? "Tone Played" : "Play Test Tone"}
+                </button>
+                <button className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-black" onClick={() => setSpeakerReady(true)}>I heard it</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-zinc-600">You can start once camera is enabled. Mic and speaker checks are recommended.</div>
+            <button
+              className="inline-flex items-center rounded-xl bg-zinc-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-black disabled:opacity-50"
+              onClick={startTest}
+              disabled={!camReady || !micReady || !speakerReady || starting}
+            >
+              {starting ? (
+                <span className="mr-2 inline-block h-3.5 w-3.5 rounded-full border-2 border-zinc-300 border-t-zinc-700 animate-spin" aria-hidden="true"></span>
+              ) : null}
+              Start Test
+            </button>
+          </div>
+          </div>
         </div>
+
+        {/* Right 30vw: quote */}
+        <div className="split-right">
+          <div className="max-w-md">
+            <p className="text-3xl italic leading-relaxed text-zinc-900">“Winners are not those who never fail but those who never quit.”</p>
+            <p className="mt-4 text-zinc-600">– Dr. APJ Abdul Kalam</p>
+          </div>
+        </div>
+        {/* Bottom-left camera preview */}
+        {camReady ? (
+          <video ref={preVideoRef} className="fixed bottom-4 left-4 z-20 h-28 w-36 rounded-xl border border-zinc-300 bg-black shadow-md" autoPlay playsInline muted />
+        ) : null}
       </div>
+      </>
     );
   }
 
@@ -297,7 +569,9 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
   const disabled = status !== "active";
 
   return (
-    <div className="flex min-h-screen overflow-hidden bg-gradient-to-br from-zinc-50 to-zinc-200">
+    <>
+    <img src="banner.png" alt="banner" className="w-full h-24" />
+    <div className="flex min-h-screen overflow-hidden">
       <QuestionPanel
         questions={questions}
         currentIndex={currentIndex}
@@ -307,39 +581,60 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
 
       <div style={styles.main as React.CSSProperties}>
         <div className="bg-white/90 backdrop-blur border-b border-zinc-200 px-4 py-3 flex items-center justify-between" style={{ minHeight: 70 }}>
-          <div>
-            <div style={{ fontWeight: 800 }}>{test.title}</div>
-            <div className="mt-1 flex items-center gap-3">
-              {/* Modern violations counter */}
-              {(() => {
-                const max = Math.max(1, Number(test.maxViolations) || 1);
-                const count = Math.max(0, violationsCount);
-                const pct = Math.min(100, Math.round((count / max) * 100));
-                const level = status === "locked" ? "rose" : pct <= 33 ? "emerald" : pct <= 66 ? "amber" : "rose";
-                const bg = `bg-${level}-50`;
-                const text = `text-${level}-900`;
-                const border = `border-${level}-200`;
-                const fill = `bg-${level}-400`;
-                return (
-                  <div className={`inline-flex items-center gap-2 rounded-xl border ${border} ${bg} ${text} px-3 py-1 text-xs font-medium shadow-sm`}> 
-                    <span className={`h-2 w-2 rounded-full ${fill}`}></span>
-                    <span>Violations {count}/{max}</span>
-                    {status === "locked" ? (
-                      <span className="rounded-md bg-rose-500/10 px-2 py-0.5 text-rose-700">LOCKED</span>
-                    ) : null}
-                    <span className="ml-2 inline-block h-2 w-24 rounded-full bg-white/60">
-                      <span className={`block h-2 rounded-full ${fill}`} style={{ width: `${pct}%` }}></span>
-                    </span>
-                  </div>
-                );
-              })()}
-            </div>
+          <div className="flex items-center gap-4">
+            <div className="font-extrabold">{test.title}</div>
+            {/* Overall violations pill */}
+            {(() => {
+              const max = Math.max(1, Number(test.maxViolations) || 1);
+              const count = Math.max(0, violationsCount);
+              const pct = Math.min(100, Math.round((count / max) * 100));
+              const level = status === "locked" ? "rose" : pct <= 33 ? "emerald" : pct <= 66 ? "amber" : "rose";
+              const bg = `bg-${level}-50`;
+              const text = `text-${level}-900`;
+              const border = `border-${level}-200`;
+              const fill = `bg-${level}-400`;
+              return (
+                <div className={`inline-flex items-center gap-2 rounded-xl border ${border} ${bg} ${text} px-3 py-1 text-xs font-medium shadow-sm`}> 
+                  <span className={`h-2 w-2 rounded-full ${fill}`}></span>
+                  <span>Violations {count}/{max}</span>
+                  {status === "locked" ? (
+                    <span className="rounded-md bg-rose-500/10 px-2 py-0.5 text-rose-700">LOCKED</span>
+                  ) : null}
+                  <span className="ml-2 inline-block h-2 w-24 rounded-full bg-white/60">
+                    <span className={`block h-2 rounded-full ${fill}`} style={{ width: `${pct}%` }}></span>
+                  </span>
+                </div>
+              );
+            })()}
+            {/* Camera violations pill (same style) */}
+            {(() => {
+              const max = CAMERA_MAX;
+              const count = Math.max(0, camViolationsCount);
+              const pct = Math.min(100, Math.round((count / max) * 100));
+              const level = status === "locked" ? "rose" : pct <= 33 ? "emerald" : pct <= 66 ? "amber" : "rose";
+              const bg = `bg-${level}-50`;
+              const text = `text-${level}-900`;
+              const border = `border-${level}-200`;
+              const fill = `bg-${level}-400`;
+              return (
+                <div className={`inline-flex items-center gap-2 rounded-xl border ${border} ${bg} ${text} px-3 py-1 text-xs font-medium shadow-sm`}> 
+                  <span className={`h-2 w-2 rounded-full ${fill}`}></span>
+                  <span>Camera {count}/{max}</span>
+                  {status === "locked" ? (
+                    <span className="rounded-md bg-rose-500/10 px-2 py-0.5 text-rose-700">LOCKED</span>
+                  ) : null}
+                  <span className="ml-2 inline-block h-2 w-24 rounded-full bg-white/60">
+                    <span className={`block h-2 rounded-full ${fill}`} style={{ width: `${pct}%` }}></span>
+                  </span>
+                </div>
+              );
+            })()}
           </div>
 
           <div className="flex items-center gap-3">
             <div className="min-w-[86px] rounded-2xl border-2 border-zinc-900 px-3 py-2 text-center text-[18px] font-black">{formatTime(secondsLeft)}</div>
             <button
-              className="inline-flex items-center rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 shadow-sm transition hover:bg-zinc-50"
+              className="inline-flex items-center rounded-xl border border-zinc-300 bg-blue-400 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-black hover:scale-110"
               onClick={() => setSubmitOpen(true)}
               disabled={status === "submitted"}
             >
@@ -409,6 +704,7 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
         </p>
       </Modal>
     </div>
+    </>
   );
 });
 
@@ -459,10 +755,11 @@ const styles: { [key: string]: any } = {
   bottombar: {
     marginTop: "auto",
     padding: 16,
-    borderTop: "1px solid #eee",
+    borderTop: "1px solid rgba(238,238,238,0.7)",
     display: "flex",
     justifyContent: "space-between",
-    background: "#fff",
+    background: "rgba(255,255,255,0.78)",
+    backdropFilter: "saturate(180%) blur(10px)",
   },
   secondaryBtn: {
     padding: "10px 14px",

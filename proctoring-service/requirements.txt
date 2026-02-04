@@ -1,5 +1,6 @@
 fastapi
 uvicorn
 numpy
-opencv-python-headless
+opencv-python
 mediapipe==0.10.9
+psutil

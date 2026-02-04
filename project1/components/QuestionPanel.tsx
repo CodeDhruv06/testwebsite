@@ -13,10 +13,10 @@ interface QuestionPanelProps {
 
 export default function QuestionPanel({ questions, currentIndex, answersMap, onJump }: QuestionPanelProps) {
   return (
-    <div style={styles.wrap}>
-      <div style={styles.title}>Questions</div>
+    <div className="w-60 border-r border-zinc-200 p-4 h-screen overflow-auto bg-gradient-to-b from-blue-200 via-rose-200 to-sky-300">
+      <div className="mb-3 font-bold text-zinc-900">Questions</div>
 
-      <div style={styles.grid}>
+      <div className="grid grid-cols-3 gap-2">
         {questions.map((q: Question, idx: number) => {
           const answered = answersMap.has(q._id);
           const isActive = idx === currentIndex;
@@ -25,12 +25,12 @@ export default function QuestionPanel({ questions, currentIndex, answersMap, onJ
             <button
               key={q._id}
               onClick={() => onJump(idx)}
-              style={{
-                ...styles.qBtn,
-                borderColor: isActive ? "#111" : "#ddd",
-                background: answered ? "#111" : "#fff",
-                color: answered ? "#fff" : "#111",
-              }}
+              className={[
+                "h-11 rounded-xl border-2 font-bold transition",
+                isActive ? "border-zinc-900" : "border-zinc-300",
+                answered ? "bg-zinc-900 text-white" : "bg-white text-zinc-900",
+                "hover:bg-zinc-50"
+              ].join(" ")}
             >
               {idx + 1}
             </button>
@@ -41,27 +41,3 @@ export default function QuestionPanel({ questions, currentIndex, answersMap, onJ
   );
 }
 
-const styles: { [key: string]: React.CSSProperties } = {
-  wrap: {
-    width: 240,
-    borderRight: "1px solid #eee",
-    padding: 14,
-    boxSizing: "border-box" as const,
-    height: "100vh",
-    overflow: "auto",
-    background: "#fafafa",
-  },
-  title: { fontWeight: 700, marginBottom: 10 },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
-    gap: 10,
-  },
-  qBtn: {
-    height: 44,
-    borderRadius: 10,
-    border: "2px solid #ddd",
-    cursor: "pointer",
-    fontWeight: 700,
-  },
-};

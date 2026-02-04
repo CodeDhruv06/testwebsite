@@ -27,12 +27,19 @@ export default function TestLinkPage() {
     }
   };
 
+  const handleCameraCounterUpdate = (count: number) => {
+    if (testShellRef.current?.updateCameraViolations) {
+      testShellRef.current.updateCameraViolations(count);
+    }
+  };
+
   return (
     <>
       {attemptId && (
         <CameraGuard 
           attemptId={attemptId} 
           onStatusChange={handleCameraStatusChange}
+          onCounterUpdate={handleCameraCounterUpdate}
         />
       )}
       <TestShell 

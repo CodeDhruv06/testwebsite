@@ -17,7 +17,7 @@ export async function POST(req, { params }) {
     const body = await req.json();
     const { type } = body;
     
-    if (!type || typeof type !== 'string' || !["TAB_HIDDEN", "BLUR", "FULLSCREEN_EXIT", "CAMERA", "LOOKING_AWAY"].includes(type)) {
+    if (!type || typeof type !== 'string' || !["TAB_HIDDEN", "BLUR", "FULLSCREEN_EXIT", "CAMERA", "LOOKING_AWAY", "WINDOW_SWITCH"].includes(type)) {
       return NextResponse.json({ error: 'Invalid violation type' }, { status: 400 });
     }
     
