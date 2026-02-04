@@ -113,6 +113,47 @@ export function useWindowMonitor({ enabled, checkInterval = 1000, onViolation }:
     };
   }, [enabled, isMonitoring, checkInterval, checkWindow]);
 
+  // Close other applications (not browser tabs)
+  const closeOtherApps = useCallback(async () => {
+    try {
+      const res = await fetch(`${PROCTORING_SERVICE_URL}/window/close-others`, {
+        method: "POST",
+      });
+      
+      const data = await res.json();
+      
+      if (data.success) {
+        console.log(`✅ Closed ${data.closed_count} other application(s)`);
+        if (data.closed && data.closed.length > 0) {
+          console.log("Closed apps:", data.closed.map((a: { title: string }) => a.title).join(", "));
+        }
+        return {
+          success: true,
+          closedCount: data.closed_count,
+          closedApps: data.closed || []
+        };
+      } else {
+        console.log("Failed to close other apps:", data.error);
+        return { success: false, error: data.error };
+      }
+    } catch (error) {
+      console.error("Error closing other apps:", error);
+      return { success: false, error: "Network error" };
+    }
+  }, []);
+
+  // List all windows (for debugging)
+  const listWindows = useCallback(async () => {
+    try {
+      const res = await fetch(`${PROCTORING_SERVICE_URL}/window/list`);
+      const data = await res.json();
+      return data;
+    } catch (error) {
+      console.error("Error listing windows:", error);
+      return null;
+    }
+  }, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -123,6 +164,8 @@ export function useWindowMonitor({ enabled, checkInterval = 1000, onViolation }:
   return {
     initializeMonitoring,
     stopMonitoring,
+    closeOtherApps,
+    listWindows,
     isMonitoring,
     windowsAvailable,
     allowedWindow,

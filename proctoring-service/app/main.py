@@ -6,6 +6,7 @@ import numpy as np
 import cv2
 import time
 import sys
+import os
 from gaze import analyze_gaze, analyze_gaze_with_head_pose, process_frame_cv2
 from utils import (
     get_active_window_pid, 
@@ -173,6 +174,178 @@ def reset_window_monitoring():
     allowed_window_store["title"] = None
     allowed_window_store["pid"] = None
     return {"success": True, "message": "Window monitoring reset"}
+
+
+@app.post("/window/close-others")
+def close_other_windows():
+    """
+    Close all windows except the allowed window (the browser with the test).
+    This will terminate other applications that might be distracting.
+    NOTE: This does NOT close browser tabs, only other Windows applications.
+    """
+    if not WINDOWS_AVAILABLE:
+        return {
+            "success": False,
+            "error": "Window closing not available (not running on Windows)",
+            "windows_available": False
+        }
+    
+    if allowed_window_store["pid"] is None:
+        return {
+            "success": False,
+            "error": "No allowed window set. Call /window/set-allowed first."
+        }
+    
+    try:
+        import psutil
+        
+        closed_apps = []
+        skipped_apps = []
+        failed_apps = []
+        
+        # Get list of all visible windows
+        all_windows = gw.getAllWindows()
+        
+        # System processes that should never be closed
+        protected_processes = [
+            'explorer.exe', 'dwm.exe', 'csrss.exe', 'wininit.exe', 
+            'services.exe', 'lsass.exe', 'smss.exe', 'svchost.exe',
+            'system', 'registry', 'taskhostw.exe', 'sihost.exe',
+            'fontdrvhost.exe', 'winlogon.exe', 'ctfmon.exe',
+            'runtimebroker.exe', 'searchui.exe', 'shellexperiencehost.exe',
+            'startmenuexperiencehost.exe', 'textinputhost.exe',
+            'applicationframehost.exe', 'systemsettings.exe',
+            'securityhealthsystray.exe', 'securityhealthservice.exe',
+            'conhost.exe', 'cmd.exe', 'powershell.exe', 'python.exe',
+            'pythonw.exe', 'uvicorn.exe', 'node.exe', 'code.exe'
+        ]
+        
+        for window in all_windows:
+            if not window.title or window.title.strip() == '':
+                continue
+                
+            try:
+                # Get the process ID for this window
+                hwnd = window._hWnd
+                _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
+                
+                # Skip the allowed window (the test browser)
+                if window_pid == allowed_window_store["pid"]:
+                    skipped_apps.append({
+                        "title": window.title,
+                        "reason": "allowed_window"
+                    })
+                    continue
+                
+                # Get process info
+                try:
+                    process = psutil.Process(window_pid)
+                    process_name = process.name().lower()
+                    
+                    # Skip protected system processes
+                    if process_name in protected_processes:
+                        skipped_apps.append({
+                            "title": window.title,
+                            "process": process_name,
+                            "reason": "protected_process"
+                        })
+                        continue
+                    
+                    # Skip the current Python process (proctoring service)
+                    if window_pid == os.getpid():
+                        skipped_apps.append({
+                            "title": window.title,
+                            "reason": "proctoring_service"
+                        })
+                        continue
+                    
+                    # Terminate the process
+                    process.terminate()
+                    closed_apps.append({
+                        "title": window.title,
+                        "process": process_name,
+                        "pid": window_pid
+                    })
+                    
+                except psutil.NoSuchProcess:
+                    pass
+                except psutil.AccessDenied:
+                    failed_apps.append({
+                        "title": window.title,
+                        "reason": "access_denied"
+                    })
+                    
+            except Exception as e:
+                failed_apps.append({
+                    "title": window.title,
+                    "reason": str(e)
+                })
+        
+        return {
+            "success": True,
+            "closed": closed_apps,
+            "skipped": skipped_apps,
+            "failed": failed_apps,
+            "closed_count": len(closed_apps),
+            "message": f"Closed {len(closed_apps)} application(s)"
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@app.get("/window/list")
+def list_windows():
+    """List all visible windows for debugging purposes."""
+    if not WINDOWS_AVAILABLE:
+        return {
+            "success": False,
+            "windows_available": False
+        }
+    
+    try:
+        import psutil
+        
+        all_windows = gw.getAllWindows()
+        window_list = []
+        
+        for window in all_windows:
+            if not window.title or window.title.strip() == '':
+                continue
+            
+            try:
+                hwnd = window._hWnd
+                _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
+                
+                try:
+                    process = psutil.Process(window_pid)
+                    process_name = process.name()
+                except:
+                    process_name = "unknown"
+                
+                window_list.append({
+                    "title": window.title,
+                    "pid": window_pid,
+                    "process": process_name,
+                    "is_allowed": window_pid == allowed_window_store.get("pid")
+                })
+            except:
+                pass
+        
+        return {
+            "success": True,
+            "windows": window_list,
+            "count": len(window_list),
+            "allowed_pid": allowed_window_store.get("pid")
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 
 def start_monitoring():

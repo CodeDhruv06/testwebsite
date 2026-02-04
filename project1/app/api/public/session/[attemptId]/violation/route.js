@@ -17,7 +17,12 @@ export async function POST(req, { params }) {
     const body = await req.json();
     const { type } = body;
     
-    if (!type || typeof type !== 'string' || !["TAB_HIDDEN", "BLUR", "FULLSCREEN_EXIT", "CAMERA", "LOOKING_AWAY", "WINDOW_SWITCH"].includes(type)) {
+    // Define violation categories
+    const cameraViolations = ["CAMERA", "LOOKING_AWAY"];
+    const otherViolations = ["TAB_HIDDEN", "BLUR", "FULLSCREEN_EXIT", "WINDOW_SWITCH", "MULTIPLE_TABS"];
+    const allViolationTypes = [...cameraViolations, ...otherViolations];
+    
+    if (!type || typeof type !== 'string' || !allViolationTypes.includes(type)) {
       return NextResponse.json({ error: 'Invalid violation type' }, { status: 400 });
     }
     
@@ -35,22 +40,58 @@ export async function POST(req, { params }) {
       return NextResponse.json({ error: 'Test not found' }, { status: 404 });
     }
     
+    // Increment total violation count and log the violation
     attempt.violationsCount += 1;
     attempt.violations.push({ type, at: new Date() });
     
-    const maxViolations = test.maxViolations || 2;
-    if (attempt.violationsCount > maxViolations) {
+    // Check if should lock based on violation type
+    let shouldLock = false;
+    
+    if (cameraViolations.includes(type)) {
+      // Camera violations: count only camera-related violations, lock at 3
+      const cameraViolationCount = attempt.violations.filter(v => 
+        cameraViolations.includes(v.type)
+      ).length;
+      
+      // Default to 3 camera violations allowed before lock (lock on 4th violation)
+      const maxCameraViolations = (test.maxCameraViolations !== undefined && test.maxCameraViolations !== null) 
+        ? test.maxCameraViolations 
+        : 3;
+      
+      console.log(`Camera violation ${cameraViolationCount}/${maxCameraViolations} for attempt ${attemptId}`);
+      
+      if (cameraViolationCount > maxCameraViolations) {
+        shouldLock = true;
+        console.log(`Attempt ${attemptId} locked: ${cameraViolationCount} camera violations (max: ${maxCameraViolations})`);
+      }
+    } else {
+      // Other violations (tab switch, blur, fullscreen, window switch, multiple tabs): lock immediately
+      shouldLock = true;
+      console.log(`Attempt ${attemptId} locked immediately: ${type} violation`);
+    }
+    
+    if (shouldLock) {
       attempt.status = 'locked';
-      console.log(`Attempt ${attemptId} locked: ${attempt.violationsCount} violations (max: ${maxViolations})`);
     }
     
     await attempt.save();
 
+    // Count camera violations for response
+    const finalCameraViolationCount = attempt.violations.filter(v => 
+      cameraViolations.includes(v.type)
+    ).length;
+    
+    const finalMaxCameraViolations = (test.maxCameraViolations !== undefined && test.maxCameraViolations !== null) 
+      ? test.maxCameraViolations 
+      : 3;
+
     return NextResponse.json({
       ok: true,
       violationsCount: attempt.violationsCount,
-      maxViolations,
+      cameraViolationsCount: finalCameraViolationCount,
+      maxCameraViolations: finalMaxCameraViolations,
       status: attempt.status,
+      violationType: type,
     });
   } catch (err) {
     console.error('Error recording violation:', err);

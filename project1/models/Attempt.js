@@ -13,7 +13,7 @@ const violationSchema = new mongoose.Schema(
   {
     type: {
       type: String,
-      enum: ["TAB_HIDDEN", "BLUR", "FULLSCREEN_EXIT", "CAMERA", "LOOKING_AWAY"],
+      enum: ["TAB_HIDDEN", "BLUR", "FULLSCREEN_EXIT", "CAMERA", "LOOKING_AWAY", "WINDOW_SWITCH", "MULTIPLE_TABS"],
       required: true,
     },
     at: { type: Date, default: Date.now },

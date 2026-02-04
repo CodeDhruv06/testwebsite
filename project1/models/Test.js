@@ -23,6 +23,7 @@ const testSchema = new mongoose.Schema(
     title: { type: String, required: true },
     durationSeconds: { type: Number, default: 3600 }, // 60 min
     maxViolations: { type: Number, default: 3 },
+    maxCameraViolations: { type: Number, default: 3 }, // Camera violations before lock
 
     questions: { type: [questionSchema], default: [] },
   },

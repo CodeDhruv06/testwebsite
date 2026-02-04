@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { captureFrame } from "@/lib/camera";
 
-const MAX_VIOLATIONS = 2;
+const MAX_VIOLATIONS = 3;
 const PROCTORING_SERVICE_URL = process.env.NEXT_PUBLIC_PROCTOR_URL ?? "http://localhost:8000";
 
 export function useProctoring(attemptId: string, onLock: () => void) {

@@ -7,6 +7,7 @@ import QuestionNav from "./QuestionNAv";
 import QuestionPanel from "./QuestionPanel";
 import Banner from "./Banner";
 import { useWindowMonitor } from "@/app/test/useWindowMonitor";
+import { useTabMonitor } from "@/app/test/useTabMonitor";
 
 function formatTime(sec: number): string {
   const s = Math.max(0, sec);
@@ -33,10 +34,15 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
   const [violationsCount, setViolationsCount] = useState(0);
   const [lockReason, setLockReason] = useState("");
   const [camViolationsCount, setCamViolationsCount] = useState(0);
-  const CAMERA_MAX = 2;
+  const CAMERA_MAX = 3;
 
   // Window monitoring state
   const [windowMonitoringEnabled, setWindowMonitoringEnabled] = useState(false);
+  
+  // Tab monitoring state
+  const [tabMonitoringEnabled, setTabMonitoringEnabled] = useState(false);
+  const [otherTabsDetected, setOtherTabsDetected] = useState(false);
+  const [otherTabsCount, setOtherTabsCount] = useState(0);
 
   // Pre-checks (camera/mic/speaker) before starting the test
   const preVideoRef = useRef<HTMLVideoElement>(null);
@@ -81,7 +87,8 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
           "TAB_HIDDEN": "⚠️ You switched tabs during the test",
           "BLUR": "⚠️ You switched away from the test window",
           "LOOKING_AWAY": "📷 You were looking away from the screen",
-          "WINDOW_SWITCH": "🖥️ You switched to another application"
+          "WINDOW_SWITCH": "🖥️ You switched to another application",
+          "MULTIPLE_TABS": "🔀 Multiple browser tabs detected"
         };
         setLockReason(reasons[violationType] || `Test locked due to ${violationType}`);
       }
@@ -98,6 +105,38 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
   async function startTest() {
     try {
       setStarting(true);
+      
+      // STEP 1: Close other Windows applications (not browser tabs)
+      // First, set current window as allowed
+      const windowInitResult = await initializeMonitoring();
+      if (windowInitResult) {
+        // Now close other apps
+        console.log("Attempting to close other applications...");
+        const appCloseResult = await closeOtherApps();
+        if (appCloseResult.success && appCloseResult.closedCount > 0) {
+          console.log(`✅ Closed ${appCloseResult.closedCount} other application(s)`);
+        }
+      }
+      
+      // STEP 2: Check for other browser tabs
+      const tabCheckResult = await initTabMonitoring();
+      if (tabCheckResult.success && tabCheckResult.otherTabsCount > 0) {
+        // Try to close other tabs automatically
+        console.log(`Found ${tabCheckResult.otherTabsCount} other tab(s). Attempting to close them...`);
+        const closeResult = await closeOtherTabs();
+        
+        if (closeResult.remaining > 0) {
+          // Some tabs couldn't be closed (manually opened tabs)
+          setWarnText(`⚠️ Could not close ${closeResult.remaining} tab(s) automatically. Please close them manually before starting the test.`);
+          setWarnOpen(true);
+          setStarting(false);
+          stopTabMonitoring();
+          return;
+        } else {
+          console.log(`✅ Successfully closed ${closeResult.closed} other tab(s)`);
+        }
+      }
+      
       // Try to request fullscreen (optional - may fail in some browsers)
       try {
         if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
@@ -292,7 +331,8 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
           "TAB_HIDDEN": "⚠️ You switched tabs during the test",
           "BLUR": "⚠️ You switched away from the test window",
           "LOOKING_AWAY": "📷 You were looking away from the screen",
-          "WINDOW_SWITCH": "🖥️ You switched to another application"
+          "WINDOW_SWITCH": "🖥️ You switched to another application",
+          "MULTIPLE_TABS": "🔀 Multiple browser tabs detected"
         };
         setLockReason(reasons[type] || `Test locked due to ${type}`);
         setStatus("locked");
@@ -312,6 +352,7 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
   const { 
     initializeMonitoring, 
     stopMonitoring, 
+    closeOtherApps,
     isMonitoring: windowMonitorActive,
     windowsAvailable,
     allowedWindow 
@@ -319,6 +360,28 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
     enabled: windowMonitoringEnabled && status === "active",
     checkInterval: 1000, // Check every second
     onViolation: handleWindowViolation,
+  });
+
+  // ---- Tab monitoring hook
+  const handleTabViolation = useCallback(async (tabCount: number) => {
+    console.log(`🔀 Tab violation detected: ${tabCount} other tab(s) open. Attempting to close...`);
+    setOtherTabsCount(tabCount);
+    setOtherTabsDetected(true);
+    // Report the violation (will lock test if max violations exceeded)
+    reportViolation("MULTIPLE_TABS");
+  }, [attemptId]);
+
+  const {
+    initializeMonitoring: initTabMonitoring,
+    stopMonitoring: stopTabMonitoring,
+    checkForOtherTabs,
+    closeOtherTabs,
+    requestOtherTabsClose,
+    isMonitoring: tabMonitorActive,
+    otherTabsCount: currentOtherTabsCount,
+  } = useTabMonitor({
+    enabled: tabMonitoringEnabled && status === "active",
+    onMultipleTabsDetected: handleTabViolation,
   });
 
   // Initialize window monitoring when test becomes active
@@ -335,6 +398,29 @@ const TestShell = forwardRef(function TestShell({ token, onAttemptIdReceived }: 
       setWindowMonitoringEnabled(false);
     }
   }, [status, windowMonitorActive, initializeMonitoring, stopMonitoring]);
+
+  // Initialize tab monitoring when test becomes active
+  useEffect(() => {
+    if (status === "active" && !tabMonitorActive) {
+      initTabMonitoring().then((result) => {
+        if (result.success) {
+          setTabMonitoringEnabled(true);
+          console.log("✅ Tab monitoring started");
+          
+          // If other tabs were detected on start, report violation immediately
+          if (result.otherTabsCount > 0) {
+            console.log(`⚠️ Found ${result.otherTabsCount} other tab(s) on test start!`);
+            setOtherTabsCount(result.otherTabsCount);
+            setOtherTabsDetected(true);
+            reportViolation("MULTIPLE_TABS");
+          }
+        }
+      });
+    } else if (status !== "active" && tabMonitorActive) {
+      stopTabMonitoring();
+      setTabMonitoringEnabled(false);
+    }
+  }, [status, tabMonitorActive, initTabMonitoring, stopTabMonitoring]);
 
   // ---- start timers when active
   useEffect(() => {
